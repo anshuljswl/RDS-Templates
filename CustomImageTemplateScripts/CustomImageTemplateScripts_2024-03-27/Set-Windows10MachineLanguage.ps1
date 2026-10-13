@@ -341,6 +341,13 @@ function Test-RecognizedNonServicingPendingFileRenamePair {
         return $true
     }
 
+    if (
+        $sourcePath -ieq 'C:\Windows\INF\setupapi.dev.log' -and
+        $destinationPath -ieq 'C:\Windows\INF\setupapi.setup.log'
+    ) {
+        return $true
+    }
+
     if (-not [string]::IsNullOrEmpty($destinationPath)) {
         return $false
     }
