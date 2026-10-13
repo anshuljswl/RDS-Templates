@@ -11,12 +11,39 @@ and execution bodies remain unchanged.
 
 The intended portal sequence is:
 
-1. Run `InstallLanguagePacks.ps1`, then use the existing first restart.
-2. Run `SetDefaultLang.ps1`, then use the existing second restart and Sysprep.
-3. Qualify the produced image externally after the final restart.
+1. Run `InstallLanguagePacks.ps1`, then use a Windows 10-only pre-LCU restart.
+2. Run `InstallWindows10Lcu.ps1`, then use the LCU restart.
+3. Run `SetDefaultLang.ps1`, then use the final language restart and Sysprep.
+4. Qualify the produced image externally after the final restart.
 
 There is no production `Validate` customizer and no additional visible AVD UX
 parameter or route.
+
+### Conditional pre-LCU restart limitation
+
+The AIB `customize` array is static, and a `WindowsRestart` customizer is an
+unconditional managed reboot-and-wait step. The current AVD portal workflow
+does not expose a runtime condition that can insert or skip that customizer
+after language/FoD servicing. Do not emulate one by accepting
+`0x41306`/`267014`, rebooting inside the PowerShell customizer, or making a
+`WindowsRestart.restartCommand` conditionally do nothing; none of those
+preserves the supported managed-restart boundary.
+
+The minimum supported template architecture for source variants that can leave
+a genuine pre-LCU restart is therefore a fixed three-restart sequence:
+
+1. Install language/FoD content and persist immutable phase state.
+2. Run a first-class `WindowsRestart` customizer.
+3. Revalidate the persisted contract, servicing readiness, language presence,
+   and revision parity, then install the LCU.
+4. Run the LCU `WindowsRestart` customizer.
+5. Apply machine/default-user language settings.
+6. Run the final language `WindowsRestart` customizer.
+
+That sequence adds one restart even when the source would not have required the
+pre-LCU restart. Preserving two restarts for those sources would require the AVD
+portal/template producer to generate different static customizer arrays before
+the build starts; it cannot be selected safely at runtime by these scripts.
 
 ## Servicing contract
 
@@ -52,8 +79,7 @@ or cleared.
 
 - Windows 10 client build 19044 or 19045.
 - SYSTEM or elevated AIB execution context.
-- Supported language names or BCP-47 tags accepted by the existing script
-  parameters.
+- Supported display names accepted by the existing entry-script parameters.
 - Adequate disk space and network access to approved Microsoft endpoints.
 - No unsupported or ambiguous pending servicing state.
 - An approved LCU acquisition contract for the selected source image.
@@ -61,15 +87,18 @@ or cleared.
 Use the versioned entry points with the portal's existing parameters:
 
 ```powershell
-.\InstallLanguagePacks.ps1 -LanguageList @('fr-FR', 'de-DE')
-# Existing first portal-managed restart.
+.\InstallLanguagePacks.ps1 -LanguageList @('French (France)', 'German (Germany)')
+# Windows 10-only portal-managed pre-LCU restart.
 
-.\SetDefaultLang.ps1 -Language 'fr-FR'
-# Existing second portal-managed restart, followed by Sysprep.
+.\InstallWindows10Lcu.ps1
+# Portal-managed LCU restart.
+
+.\SetDefaultLang.ps1 -Language 'French (France)'
+# Final portal-managed language restart, followed by Sysprep.
 ```
 
 `InstallLanguagePacks.ps1` installs every requested language deterministically;
-it does not silently choose a default. After the first restart,
+it does not silently choose a default. After the LCU restart,
 `SetDefaultLang.ps1` selects one installed language as the machine default.
 
 These commands describe the existing entry-point contract, not a production
@@ -80,6 +109,7 @@ The Windows 10 support files are:
 
 - `Set-Windows10MachineLanguage.ps1`
 - `Copy-UserInternationalSettingsToSystemCompat.ps1`
+- `InstallWindows10Lcu.ps1`
 - `Test-Windows10MachineLanguageHealth.ps1`
 
 Entry scripts must verify SHA-256 before using downloaded or durably staged
@@ -105,18 +135,27 @@ failure remains fail-closed.
    script and support file.
 2. Use a new isolated template and gallery version tagged
    `qualification=true` and `productionApproved=false`; exclude it from latest.
-3. Use the validated Windows 10 restart settings for both existing boundaries:
+3. Use the validated Windows 10 restart settings for all three boundaries:
    - `restartTimeout`: at least `30m`.
    - `restartCheckCommand`:
      `powershell.exe -NoProfile -Command "Start-Sleep -Seconds 180; Get-Service WinRM | Where-Object Status -eq 'Running'"`
 4. Run Gen1, Gen2, and Multi-Session as separate qualifications.
 
 The AVD UX default restart timeout is five minutes and is insufficient for the
-validated Windows 10 flow. Exporting a deployed template, editing the restart
-settings, deleting the original, and redeploying is an internal validation
-workaround only. It is pending AVD Portal PM confirmation and is not final
-customer guidance. Production requires a conditional Windows 10-only
-timeout/check mechanism that does not slow or alter the Windows 11 path.
+validated Windows 10 flow. The template producer must emit the fixed
+Windows 10-only three-restart sequence from
+`Windows10-Language-ThreeRestart.Customizers.example.json`; Windows 11 must
+retain its existing customizer sequence and script bodies. Exporting a deployed
+template, editing restart settings, deleting the original, and redeploying is
+an internal validation workaround only. It is pending AVD Portal PM
+confirmation and is not final customer guidance.
+
+The example uses immutable phase-wrapper URI placeholders because the AIB
+PowerShell customizer schema does not pass arbitrary script arguments. The
+template producer must generate the install-language and apply-language
+wrappers from the portal selections, pin their SHA-256 values, and use the
+parameterless `InstallWindows10Lcu.ps1` between the first and second managed
+restarts.
 
 ## Produced-image validation
 
@@ -151,6 +190,12 @@ hardcoded LCU, or suppress an unsupported servicing state.
   only when no reboot-pending signal is present. A reported mandatory restart,
   a persistent busy state, or any other update error fails closed with the
   pending signals and competing installer processes in the operation log.
+- **Pending restart before LCU:** fail before selecting or starting the LCU.
+  `0x41306`/`267014` from the AIB PowerShell host is only a task-termination
+  status and is not evidence that the LCU completed. The current two-restart
+  workflow cannot safely continue when language/FoD servicing requires a
+  restart before the LCU; qualification must either use a source where that
+  state does not occur or approve an additional restart boundary.
 - **Unknown PFRO:** inspect every pair; do not broaden the allowlist or delete
   registry data.
 - **Language ISO has no drive letter:** retain the mount/volume/partition

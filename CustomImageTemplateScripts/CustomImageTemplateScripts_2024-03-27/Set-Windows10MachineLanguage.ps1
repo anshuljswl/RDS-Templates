@@ -66,7 +66,7 @@ param(
     [Parameter(ParameterSetName = 'Package', DontShow = $true)]
     [Parameter(ParameterSetName = 'OnlineMultiLanguage', DontShow = $true)]
     [Parameter(ParameterSetName = 'Resume', DontShow = $true)]
-    [ValidateSet('InstallAndService', 'ApplyMachineLanguage', 'Validate')]
+    [ValidateSet('InstallLanguage', 'InstallLcu', 'ApplyMachineLanguage', 'Validate')]
     [string]$AibPhase,
 
     [Parameter(ParameterSetName = 'Resume', DontShow = $true)]
@@ -127,15 +127,137 @@ function Read-State {
         throw "State file was not found at '$statePath'."
     }
 
-    return Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    try {
+        $state = Get-Content -LiteralPath $statePath -Raw -ErrorAction Stop |
+            ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "State file '$statePath' is corrupt or unreadable: $($_.Exception.Message)"
+    }
+    if ($null -eq $state) {
+        throw "State file '$statePath' did not contain a state object."
+    }
+
+    return $state
 }
 
 function Write-State {
     param([Parameter(Mandatory = $true)]$State)
 
     $State.UpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
-    $State | ConvertTo-Json -Depth 6 |
-        Set-Content -LiteralPath $statePath -Encoding UTF8
+    $temporaryStatePath = "$statePath.partial"
+    try {
+        $State | ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath $temporaryStatePath -Encoding UTF8
+        [void](Get-Content -LiteralPath $temporaryStatePath -Raw -ErrorAction Stop |
+            ConvertFrom-Json -ErrorAction Stop)
+        Move-Item -LiteralPath $temporaryStatePath -Destination $statePath -Force
+    }
+    finally {
+        Remove-Item -LiteralPath $temporaryStatePath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Required durable file was not found at '$Path'."
+    }
+
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash
+}
+
+function Assert-StateContract {
+    param([Parameter(Mandatory = $true)]$State)
+
+    $requiredProperties = @(
+        'StateSchemaVersion',
+        'OperationId',
+        'Phase',
+        'LanguageTags',
+        'LcuMode',
+        'RequireRdp',
+        'WorkingDirectory',
+        'OrchestratorSha256',
+        'CopyHelperSha256',
+        'StartedUtc',
+        'PhaseStartedUtc',
+        'FailureCount'
+    )
+    foreach ($propertyName in $requiredProperties) {
+        if ($State.PSObject.Properties.Name -notcontains $propertyName) {
+            throw "State contract is missing required property '$propertyName'."
+        }
+    }
+    if ([int]$State.StateSchemaVersion -ne 2) {
+        throw "Unsupported state schema version '$($State.StateSchemaVersion)'."
+    }
+    $operationId = [guid]::Empty
+    if (-not [guid]::TryParse([string]$State.OperationId, [ref]$operationId)) {
+        throw "State contract has invalid OperationId '$($State.OperationId)'."
+    }
+    $validPhases = @(
+        'InstallingLanguage',
+        'PostLanguageContentRestart',
+        'PostLcuRestart',
+        'PostLanguageRestart',
+        'Completed'
+    )
+    if ([string]$State.Phase -notin $validPhases) {
+        throw "State contract has unsupported phase '$($State.Phase)'."
+    }
+    if (@($State.LanguageTags).Count -eq 0) {
+        throw 'State contract does not contain any requested language tags.'
+    }
+    foreach ($languageTag in @($State.LanguageTags)) {
+        if ([string]::IsNullOrWhiteSpace([string]$languageTag)) {
+            throw 'State contract contains an empty language tag.'
+        }
+    }
+    if ([string]$State.LcuMode -notin @('Package', 'WindowsUpdate', 'OnlineMultiLanguage')) {
+        throw "State contract has unsupported LCU mode '$($State.LcuMode)'."
+    }
+    if (
+        -not [IO.Path]::GetFullPath([string]$State.WorkingDirectory).Equals(
+            [IO.Path]::GetFullPath($WorkingDirectory),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw (
+            "State contract working directory '$($State.WorkingDirectory)' does not match " +
+            "the requested directory '$WorkingDirectory'."
+        )
+    }
+    $startedUtc = [datetime]::MinValue
+    $phaseStartedUtc = [datetime]::MinValue
+    if (-not [datetime]::TryParse([string]$State.StartedUtc, [ref]$startedUtc)) {
+        throw "State contract has invalid timestamp 'StartedUtc'."
+    }
+    if (-not [datetime]::TryParse([string]$State.PhaseStartedUtc, [ref]$phaseStartedUtc)) {
+        throw "State contract has invalid timestamp 'PhaseStartedUtc'."
+    }
+    if ($phaseStartedUtc -lt $startedUtc -or $startedUtc -gt (Get-Date).AddMinutes(5)) {
+        throw 'State contract timestamps are inconsistent.'
+    }
+    if ([int]$State.FailureCount -lt 0) {
+        throw 'State contract has an invalid failure count.'
+    }
+    $actualOrchestratorSha256 = Get-FileSha256 -Path $installedScriptPath
+    if ($actualOrchestratorSha256 -ne [string]$State.OrchestratorSha256) {
+        throw 'The durable Windows 10 language orchestrator no longer matches the state contract.'
+    }
+    $actualCopyHelperSha256 = Get-FileSha256 -Path $installedHelperPath
+    if ($actualCopyHelperSha256 -ne [string]$State.CopyHelperSha256) {
+        throw 'The durable Windows 10 international-settings helper no longer matches the state contract.'
+    }
+    if (
+        [string]$State.LcuMode -eq 'Package' -and
+        [string]$State.Phase -in @('PostLanguageContentRestart', 'InstallingLanguage') -and
+        -not (Test-Path -LiteralPath ([string]$State.LcuPackagePath) -PathType Leaf)
+    ) {
+        throw "The durable LCU package recorded in state is missing at '$($State.LcuPackagePath)'."
+    }
 }
 
 function Register-ResumeTask {
@@ -405,6 +527,31 @@ function Get-WindowsUpdateInstallFailureDisposition {
     }
 
     return 'TransientBusy'
+}
+
+function Get-LcuStartBlockReason {
+    param([string[]]$PendingReasons)
+
+    if (@($PendingReasons).Count -eq 0) {
+        return $null
+    }
+
+    return (
+        'Windows requires a servicing restart before LCU installation. ' +
+        "Pending signal(s): $(@($PendingReasons) -join ', '). " +
+        'The current two-restart AIB workflow cannot safely start an LCU in this state: ' +
+        'the Windows Update installer can terminate its hosting task before returning an install result. ' +
+        'Add an approved restart boundary before the LCU, or use a source image where language/FoD servicing ' +
+        'settles without a pending restart.'
+    )
+}
+
+function Assert-LcuInstallationCanStart {
+    $pendingReasons = @(Get-ServicingPendingReasons)
+    $blockReason = Get-LcuStartBlockReason -PendingReasons $pendingReasons
+    if ($null -ne $blockReason) {
+        throw $blockReason
+    }
 }
 
 function Get-OsServicingInfo {
@@ -1585,6 +1732,9 @@ function Request-Restart {
         NextAibPhase = if (-not $isAibExecution) {
             $null
         }
+        elseif ([string]$state.Phase -eq 'PostLanguageContentRestart') {
+            'InstallLcu'
+        }
         elseif ([string]$state.Phase -eq 'PostLcuRestart') {
             'ApplyMachineLanguage'
         }
@@ -1690,7 +1840,7 @@ function Assert-PortalRestartCompleted {
     }
 }
 
-function Invoke-InstallAndServicePhase {
+function Invoke-InstallLanguagePhase {
     param([Parameter(Mandatory = $true)]$State)
 
     $targetLanguageTags = @(Get-StateLanguageTags -State $State)
@@ -1727,6 +1877,32 @@ function Invoke-InstallAndServicePhase {
     }
 
     Wait-ForServicingReady -AllowPendingRestart
+    foreach ($targetLanguageTag in $targetLanguageTags) {
+        [void](Wait-ForLanguagePackage -TargetLanguageTag $targetLanguageTag)
+        Write-Operation "Verified the '$targetLanguageTag' CBS client language package is installed before restart."
+    }
+
+    $State.Phase = 'PostLanguageContentRestart'
+    $State.PhaseStartedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    $State.Error = $null
+    Write-State -State $State
+    Register-ResumeTask
+    Request-Restart -Reason 'Restarting after language and Features on Demand servicing before LCU evaluation.'
+}
+
+function Invoke-InstallLcuPhase {
+    param([Parameter(Mandatory = $true)]$State)
+
+    Assert-PortalRestartCompleted -State $State
+    Start-Sleep -Seconds 60
+    Wait-ForServicingReady
+
+    $targetLanguageTags = @(Get-StateLanguageTags -State $State)
+    foreach ($targetLanguageTag in $targetLanguageTags) {
+        [void](Wait-ForLanguagePackage -TargetLanguageTag $targetLanguageTag)
+        Write-Operation "Verified the '$targetLanguageTag' CBS client language package after the pre-LCU restart."
+    }
+
     $requiresLcuReapplication = $false
     try {
         foreach ($targetLanguageTag in $targetLanguageTags) {
@@ -1740,6 +1916,7 @@ function Invoke-InstallAndServicePhase {
     }
 
     if ($requiresLcuReapplication) {
+        Assert-LcuInstallationCanStart
         if ([string]$State.LcuMode -eq 'Package') {
             Install-LcuFromPackage -PackagePath $State.LcuPackagePath
         }
@@ -1751,6 +1928,9 @@ function Invoke-InstallAndServicePhase {
             }
             Install-LcuFromWindowsUpdate -Selection $windowsUpdateSelection
         }
+    }
+    else {
+        Write-Operation 'LCU installation was not required after the pre-LCU restart.'
     }
 
     $State.Phase = 'PostLcuRestart'
@@ -1787,8 +1967,19 @@ function Invoke-InitialPhase {
     }
     if ($isAibExecution -and (Test-Path -LiteralPath $statePath -PathType Leaf)) {
         $existingState = Read-State
+        Assert-StateContract -State $existingState
+        if ([string]$existingState.Phase -eq 'InstallingLanguage') {
+            Write-Operation 'Resuming the interrupted AIB language/FoD phase from durable state.'
+            $script:StateOwnedByCurrentInvocation = $true
+            Invoke-InstallLanguagePhase -State $existingState
+            return
+        }
+        if ([string]$existingState.Phase -eq 'PostLanguageContentRestart') {
+            Write-Operation 'The AIB language/FoD phase is already complete and awaiting its managed restart.'
+            return
+        }
         if ([string]$existingState.Phase -ne 'Completed') {
-            throw "An incomplete AIB language operation already exists in phase '$($existingState.Phase)'. Resume it instead of starting over."
+            throw "An incomplete AIB language operation already exists in phase '$($existingState.Phase)' and cannot be restarted by the initial customizer."
         }
     }
     Wait-ForServicingReady
@@ -1858,7 +2049,9 @@ function Invoke-InitialPhase {
     }
 
     $state = [pscustomobject][ordered]@{
-        Phase                = 'InstallingLanguageAndLcu'
+        StateSchemaVersion   = 2
+        OperationId          = [guid]::NewGuid().ToString('D')
+        Phase                = 'InstallingLanguage'
         LanguageTag          = if ($initialParameterSetName -eq 'OnlineMultiLanguage') { $null } else { $LanguageTag }
         LanguageTags         = $requestedLanguageTags
         LcuMode              = $initialParameterSetName
@@ -1870,6 +2063,9 @@ function Invoke-InitialPhase {
         RequireRdp           = [bool]$RequireRdp
         AllowRecognizedNonServicingPendingFileRenames = [bool]$script:AllowRecognizedNonServicingPendingFileRenames
         RestartAutomatically = [bool]$RestartAutomatically
+        WorkingDirectory     = [IO.Path]::GetFullPath($WorkingDirectory)
+        OrchestratorSha256   = Get-FileSha256 -Path $installedScriptPath
+        CopyHelperSha256     = Get-FileSha256 -Path $installedHelperPath
         FailureCount         = 0
         Error                = $null
         DefaultUserHiveBackup = $null
@@ -1880,7 +2076,7 @@ function Invoke-InitialPhase {
     Write-State -State $state
     Register-ResumeTask
     $script:StateOwnedByCurrentInvocation = $true
-    Invoke-InstallAndServicePhase -State $state
+    Invoke-InstallLanguagePhase -State $state
 }
 
 function Invoke-PostLcuRestartPhase {
@@ -1961,7 +2157,7 @@ if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProces
 if ($isAibExecution -and -not (Test-IsSystemAccount)) {
     throw 'Azure Image Builder mode must run as the local SYSTEM account.'
 }
-if ($isAibExecution -and $AibPhase -ne 'InstallAndService' -and -not $Resume) {
+if ($isAibExecution -and $AibPhase -ne 'InstallLanguage' -and -not $Resume) {
     throw "AIB phase '$AibPhase' requires -Resume."
 }
 
@@ -1975,6 +2171,7 @@ try {
     }
 
     $state = Read-State
+    Assert-StateContract -State $state
     $script:StateOwnedByCurrentInvocation = $true
     $script:RestartAutomatically = if ($isAibExecution) { $false } else { [bool]$state.RestartAutomatically }
     $script:AllowRecognizedNonServicingPendingFileRenames = (
@@ -1997,8 +2194,8 @@ try {
         throw "Requested language '$ExpectedLanguageTag' was not recorded by InstallLanguagePacks.ps1."
     }
     if ($isAibExecution) {
-        $expectedPhase = if ($AibPhase -eq 'InstallAndService') {
-            'InstallingLanguageAndLcu'
+        $expectedPhase = if ($AibPhase -eq 'InstallLcu') {
+            'PostLanguageContentRestart'
         }
         elseif ($AibPhase -eq 'ApplyMachineLanguage') {
             'PostLcuRestart'
@@ -2009,13 +2206,29 @@ try {
         else {
             throw "Unsupported AIB resume phase '$AibPhase'."
         }
+        $completedPhase = if ($AibPhase -eq 'InstallLcu') {
+            'PostLcuRestart'
+        }
+        elseif ($AibPhase -eq 'ApplyMachineLanguage') {
+            'PostLanguageRestart'
+        }
+        else {
+            'Completed'
+        }
+        if ([string]$state.Phase -eq $completedPhase) {
+            Write-Operation "AIB phase '$AibPhase' is already complete in durable state '$completedPhase'."
+            return
+        }
         if ([string]$state.Phase -ne $expectedPhase) {
             throw "AIB phase '$AibPhase' requires state '$expectedPhase', found '$($state.Phase)'."
         }
     }
     switch ([string]$state.Phase) {
-        'InstallingLanguageAndLcu' {
-            Invoke-InstallAndServicePhase -State $state
+        'InstallingLanguage' {
+            Invoke-InstallLanguagePhase -State $state
+        }
+        'PostLanguageContentRestart' {
+            Invoke-InstallLcuPhase -State $state
         }
         'PostLcuRestart' {
             Invoke-PostLcuRestartPhase -State $state

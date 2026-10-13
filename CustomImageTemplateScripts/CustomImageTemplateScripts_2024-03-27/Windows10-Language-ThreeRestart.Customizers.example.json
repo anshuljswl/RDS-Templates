@@ -1,0 +1,60 @@
+{
+  "customize": [
+    {
+      "type": "PowerShell",
+      "name": "Windows10Language-1-InstallLanguage",
+      "runElevated": true,
+      "runAsSystem": true,
+      "inline": [
+        "$ErrorActionPreference='Stop'; $u='<immutable-install-language-wrapper-uri>'; $p=Join-Path $env:TEMP 'InstallLanguagePacks.ps1'; Invoke-WebRequest -Uri $u -OutFile $p -UseBasicParsing; if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne '<install-language-wrapper-sha256>'){throw 'InstallLanguagePacks.ps1 checksum mismatch.'}; & $p -LanguageList @('French (France)'); if($LASTEXITCODE){exit $LASTEXITCODE}"
+      ],
+      "validExitCodes": [
+        0
+      ]
+    },
+    {
+      "type": "WindowsRestart",
+      "name": "Windows10Language-2-RestartBeforeLcu",
+      "restartCommand": "shutdown.exe /r /f /t 0 /c \"AIB Windows 10 pre-LCU servicing restart\"",
+      "restartCheckCommand": "powershell.exe -NoProfile -Command \"Start-Sleep -Seconds 180; Get-Service WinRM | Where-Object Status -eq 'Running'\"",
+      "restartTimeout": "30m"
+    },
+    {
+      "type": "PowerShell",
+      "name": "Windows10Language-3-InstallLcu",
+      "runElevated": true,
+      "runAsSystem": true,
+      "scriptUri": "<immutable-install-windows10-lcu-uri>",
+      "sha256Checksum": "<install-windows10-lcu-sha256>",
+      "validExitCodes": [
+        0
+      ]
+    },
+    {
+      "type": "WindowsRestart",
+      "name": "Windows10Language-4-RestartAfterLcu",
+      "restartCommand": "shutdown.exe /r /f /t 0 /c \"AIB Windows 10 LCU restart\"",
+      "restartCheckCommand": "powershell.exe -NoProfile -Command \"Start-Sleep -Seconds 180; Get-Service WinRM | Where-Object Status -eq 'Running'\"",
+      "restartTimeout": "30m"
+    },
+    {
+      "type": "PowerShell",
+      "name": "Windows10Language-5-ApplyMachineLanguage",
+      "runElevated": true,
+      "runAsSystem": true,
+      "inline": [
+        "$ErrorActionPreference='Stop'; $u='<immutable-apply-language-wrapper-uri>'; $p=Join-Path $env:TEMP 'SetDefaultLang.ps1'; Invoke-WebRequest -Uri $u -OutFile $p -UseBasicParsing; if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne '<apply-language-wrapper-sha256>'){throw 'SetDefaultLang.ps1 checksum mismatch.'}; & $p -Language 'French (France)'; if($LASTEXITCODE){exit $LASTEXITCODE}"
+      ],
+      "validExitCodes": [
+        0
+      ]
+    },
+    {
+      "type": "WindowsRestart",
+      "name": "Windows10Language-6-RestartAfterLanguage",
+      "restartCommand": "shutdown.exe /r /f /t 0 /c \"AIB Windows 10 machine language restart\"",
+      "restartCheckCommand": "powershell.exe -NoProfile -Command \"Start-Sleep -Seconds 180; Get-Service WinRM | Where-Object Status -eq 'Running'\"",
+      "restartTimeout": "30m"
+    }
+  ]
+}
