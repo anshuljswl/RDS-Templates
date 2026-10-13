@@ -746,7 +746,7 @@ Assert-True (
 ) 'The Windows 10 support location is not isolated behind one base URI.'
 $immutableSupportBaseUri = (
     'https://raw.githubusercontent.com/anshuljswl/RDS-Templates/' +
-    'dcaa3564c8975df11a09e152e3b852cc9277a6cb/' +
+    '349bcea1685f9cc799a54a7f5e445955d38c4b76/' +
     'CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27'
 )
 Assert-True (
