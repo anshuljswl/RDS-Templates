@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $windows10WorkingDirectory = 'C:\ProgramData\Windows10MachineLanguage'
 $windows10OrchestratorPath = Join-Path $windows10WorkingDirectory 'Set-Windows10MachineLanguage.ps1'
 $windows10CopyHelperPath = Join-Path $windows10WorkingDirectory 'Copy-UserInternationalSettingsToSystemCompat.ps1'
-$windows10OrchestratorSha256 = 'B951F3BA5D53A2EF10C0A02ADF063AED86499AEEDD6EC3B54A20A1C9C598E808'
+$windows10OrchestratorSha256 = '8E6D0A10A66950908700442345FABD82D04B83A66D3A0D453845750EA2C38D89'
 $windows10CopyHelperSha256 = '627BA579956AF437B2A865A99F4CCFBD8DEF7B6DCEBB2A14AA9CDA88ECBEC250'
 
 if (-not (Test-Path -LiteralPath $windows10OrchestratorPath -PathType Leaf)) {

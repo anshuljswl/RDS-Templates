@@ -201,8 +201,9 @@ Assert-True (
 ) 'Default language selection is not deferred to SetDefaultLang.'
 Assert-True (
     $installText -notmatch '-AibPhase\s+Validate' -and
+    $lcuEntryText -notmatch '-AibPhase\s+Validate' -and
     $defaultText -notmatch '-AibPhase\s+Validate'
-) 'A production entry still invokes the removed Validate phase.'
+) 'A portal entry wrapper invokes the template-only Validate phase.'
 
 $orchestratorTokens = $null
 $orchestratorParseErrors = $null
@@ -276,6 +277,16 @@ $assertPortalRestartCompletedAst = $orchestratorAst.Find({
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
     $node.Name -eq 'Assert-PortalRestartCompleted'
 }, $true)
+$convertPendingFileRenamePathAst = $orchestratorAst.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'ConvertFrom-PendingFileRenamePath'
+}, $true)
+$recognizedPendingFileRenamePairAst = $orchestratorAst.Find({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Test-RecognizedNonServicingPendingFileRenamePair'
+}, $true)
 Assert-True ($null -ne $stateLanguageTagsAst) 'Get-StateLanguageTags is missing.'
 Assert-True ($null -ne $stateLanguagePackPathAst) 'Get-StateLanguagePackPath is missing.'
 Assert-True ($null -ne $initialPhaseAst) 'Invoke-InitialPhase is missing.'
@@ -289,6 +300,34 @@ Assert-True ($null -ne $writeStateAst) 'Write-State is missing.'
 Assert-True ($null -ne $getFileSha256Ast) 'Get-FileSha256 is missing.'
 Assert-True ($null -ne $assertStateContractAst) 'Assert-StateContract is missing.'
 Assert-True ($null -ne $assertPortalRestartCompletedAst) 'Assert-PortalRestartCompleted is missing.'
+Assert-True ($null -ne $convertPendingFileRenamePathAst) 'ConvertFrom-PendingFileRenamePath is missing.'
+Assert-True ($null -ne $recognizedPendingFileRenamePairAst) 'Test-RecognizedNonServicingPendingFileRenamePair is missing.'
+if (
+    $null -ne $convertPendingFileRenamePathAst -and
+    $null -ne $recognizedPendingFileRenamePairAst
+) {
+    . ([scriptblock]::Create($convertPendingFileRenamePathAst.Extent.Text))
+    . ([scriptblock]::Create($recognizedPendingFileRenamePairAst.Extent.Text))
+
+    Assert-True (
+        Test-RecognizedNonServicingPendingFileRenamePair `
+            -Source '*1\??\C:\Windows\INF\setupapi.dev.log' `
+            -Destination '*1!\??\C:\Windows\INF\setupapi.setup.log'
+    ) 'The evidenced SetupAPI log rotation pair is not recognized after marker normalization.'
+    foreach ($pair in @(
+        @('*1\??\C:\Windows\INF\setupapi.dev.log', '*1!\??\C:\Windows\INF\setupapi.dev.log'),
+        @('*1\??\C:\Windows\INF\setupapi.setup.log', '*1!\??\C:\Windows\INF\setupapi.setup.log'),
+        @('*1\??\C:\Windows\INF\setupapi.dev.log', ''),
+        @('*1\??\C:\Windows\INF\setupapi.dev.log.bak', '*1!\??\C:\Windows\INF\setupapi.setup.log'),
+        @('*1\??\C:\Windows\INF\setupapi.dev.log', '*1!\??\C:\Windows\INF\other.log')
+    )) {
+        Assert-True (
+            -not (Test-RecognizedNonServicingPendingFileRenamePair `
+                -Source $pair[0] `
+                -Destination $pair[1])
+        ) "An unevidenced SetupAPI pending-file-rename pair was allowed: $($pair -join ' -> ')"
+    }
+}
 if ($null -ne $stateLanguageTagsAst -and $null -ne $stateLanguagePackPathAst) {
     . ([scriptblock]::Create($stateLanguageTagsAst.Extent.Text))
     . ([scriptblock]::Create($stateLanguagePackPathAst.Extent.Text))
@@ -746,7 +785,7 @@ Assert-True (
 ) 'The Windows 10 support location is not isolated behind one base URI.'
 $immutableSupportBaseUri = (
     'https://raw.githubusercontent.com/anshuljswl/RDS-Templates/' +
-    '349bcea1685f9cc799a54a7f5e445955d38c4b76/' +
+    '385d5a6d38a6f34ebf744abfaca45f5b964569a7/' +
     'CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27'
 )
 Assert-True (
@@ -787,9 +826,10 @@ Assert-True (
         'Windows10Language-3-InstallLcu|' +
         'Windows10Language-4-RestartAfterLcu|' +
         'Windows10Language-5-ApplyMachineLanguage|' +
-        'Windows10Language-6-RestartAfterLanguage'
+        'Windows10Language-6-RestartAfterLanguage|' +
+        'Windows10Language-7-Validate'
     )
-) 'The Windows 10 customizer example does not preserve the fixed three-restart order.'
+) 'The Windows 10 customizer example does not preserve the exact seven-step order.'
 Assert-True (
     @($customizerExampleObject.customize | Where-Object type -eq 'WindowsRestart').Count -eq 3
 ) 'The Windows 10 customizer example does not contain exactly three managed restarts.'
@@ -811,7 +851,7 @@ Assert-True (
                 @($_.validExitCodes).Count -eq 1 -and
                 [int]$_.validExitCodes[0] -eq 0
             }
-    ).Count -eq 3
+    ).Count -eq 4
 ) 'The PowerShell customizers do not accept exit code 0 exclusively.'
 Assert-True (
     @($powerShellCustomizers[0].inline).Count -eq 1 -and
@@ -830,10 +870,27 @@ Assert-True (
     [string]$powerShellCustomizers[2].inline[0] -match "-Language 'French \(France\)'"
 ) 'The apply-language customizer does not securely invoke the parameterized wrapper.'
 Assert-True (
+    @($powerShellCustomizers[3].inline).Count -eq 1 -and
+    [string]$powerShellCustomizers[3].inline[0] -match [regex]::Escape('C:\ProgramData\Windows10MachineLanguage') -and
+    [string]$powerShellCustomizers[3].inline[0] -match 'state\.json' -and
+    [string]$powerShellCustomizers[3].inline[0] -match 'OrchestratorSha256' -and
+    [string]$powerShellCustomizers[3].inline[0] -match 'Get-FileHash' -and
+    [string]$powerShellCustomizers[3].inline[0] -match '-Resume\s+-AibPhase Validate' -and
+    [string]$powerShellCustomizers[3].inline[0] -match "-ExpectedLanguageTag 'fr-FR'" -and
+    [string]$powerShellCustomizers[3].inline[0] -match '-WorkingDirectory \$w'
+) 'The seventh customizer does not verify and invoke the durable pinned Validate phase.'
+Assert-True (
     $customizerExampleText -notmatch '267014|0x41306|allowedExitCodes|shutdown.+PowerShell'
 ) 'The customizer example uses an unsafe task-exit or self-reboot workaround.'
 
-Assert-True ($guideText -match 'There is\s+no production `Validate` customizer') 'The guide does not document external-only validation.'
+Assert-True (
+    $guideText -match 'internal seventh template step' -and
+    $guideText -match 'wrappers must not invoke `Validate`'
+) 'The guide does not distinguish the explicit template Validate step from portal wrappers.'
+Assert-True (
+    $guideText -match 'setupapi\.dev\.log` to' -and
+    $guideText -match 'setupapi\.setup\.log'
+) 'The guide does not document the exact evidenced SetupAPI log rotation pair.'
 Assert-True ($guideText -match 'restartTimeout`: at least `30m`') 'The guide does not document the validated restart timeout.'
 Assert-True (
     $guideText -match 'Start-Sleep -Seconds 180; Get-Service WinRM \| Where-Object Status -eq ''Running'''

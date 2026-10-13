@@ -13,11 +13,14 @@ The intended portal sequence is:
 
 1. Run `InstallLanguagePacks.ps1`, then use a Windows 10-only pre-LCU restart.
 2. Run `InstallWindows10Lcu.ps1`, then use the LCU restart.
-3. Run `SetDefaultLang.ps1`, then use the final language restart and Sysprep.
-4. Qualify the produced image externally after the final restart.
+3. Run `SetDefaultLang.ps1`, then use the final language restart.
+4. Run the explicit durable `Validate` phase, then continue to Sysprep.
+5. Qualify the produced image externally.
 
-There is no production `Validate` customizer and no additional visible AVD UX
-parameter or route.
+The `Validate` customizer is an internal seventh template step. It invokes the
+durably staged, state-pinned orchestrator directly; the existing portal entry
+wrappers must not invoke `Validate`, and no additional visible AVD UX parameter
+or route is required.
 
 ### Conditional pre-LCU restart limitation
 
@@ -39,6 +42,8 @@ a genuine pre-LCU restart is therefore a fixed three-restart sequence:
 4. Run the LCU `WindowsRestart` customizer.
 5. Apply machine/default-user language settings.
 6. Run the final language `WindowsRestart` customizer.
+7. Verify the durable orchestrator against its persisted SHA-256 and invoke
+   `-Resume -AibPhase Validate` with the selected language tag.
 
 That sequence adds one restart even when the source would not have required the
 pre-LCU restart. Preserving two restarts for those sources would require the AVD
@@ -71,7 +76,10 @@ The recognized non-servicing pending-file-rename allowance is enabled only in
 the Windows 10 install path. Every PFRO pair must be well formed and match the
 validated allowlist. Unknown, mixed, malformed, servicing, language, FOD, LCU,
 or CBS-related entries remain blocking. PFRO registry data is never modified
-or cleared.
+or cleared. The produced-image SetupAPI log rotation is recognized only for the
+exact normalized pair `C:\Windows\INF\setupapi.dev.log` to
+`C:\Windows\INF\setupapi.setup.log`; other SetupAPI paths or pairings remain
+blocking.
 
 ## Using the scripts
 
@@ -94,7 +102,14 @@ Use the versioned entry points with the portal's existing parameters:
 # Portal-managed LCU restart.
 
 .\SetDefaultLang.ps1 -Language 'French (France)'
-# Final portal-managed language restart, followed by Sysprep.
+# Final portal-managed language restart.
+
+& 'C:\ProgramData\Windows10MachineLanguage\Set-Windows10MachineLanguage.ps1' `
+    -Resume `
+    -AibPhase Validate `
+    -ExpectedLanguageTag 'fr-FR' `
+    -WorkingDirectory 'C:\ProgramData\Windows10MachineLanguage'
+# Continue to Sysprep only after this durable validation succeeds.
 ```
 
 `InstallLanguagePacks.ps1` installs every requested language deterministically;
@@ -155,11 +170,16 @@ PowerShell customizer schema does not pass arbitrary script arguments. The
 template producer must generate the install-language and apply-language
 wrappers from the portal selections, pin their SHA-256 values, and use the
 parameterless `InstallWindows10Lcu.ps1` between the first and second managed
-restarts.
+restarts. After the third managed restart, the seventh customizer must verify
+the durable orchestrator against `state.json` and invoke it with `-Resume
+-AibPhase Validate`, the selected `-ExpectedLanguageTag`, and the fixed working
+directory.
 
 ## Produced-image validation
 
-After the final restart:
+The seventh customizer performs the durable post-restart language validation
+and transitions state from `PostLanguageRestart` to `Completed`. After it
+succeeds:
 
 - Verify every requested language is installed.
 - Verify each language-package revision equals the OS UBR and the expected

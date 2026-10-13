@@ -55,6 +55,18 @@
       "restartCommand": "shutdown.exe /r /f /t 0 /c \"AIB Windows 10 machine language restart\"",
       "restartCheckCommand": "powershell.exe -NoProfile -Command \"Start-Sleep -Seconds 180; Get-Service WinRM | Where-Object Status -eq 'Running'\"",
       "restartTimeout": "30m"
+    },
+    {
+      "type": "PowerShell",
+      "name": "Windows10Language-7-Validate",
+      "runElevated": true,
+      "runAsSystem": true,
+      "inline": [
+        "$ErrorActionPreference='Stop'; $w='C:\\ProgramData\\Windows10MachineLanguage'; $p=Join-Path $w 'Set-Windows10MachineLanguage.ps1'; $s=Join-Path $w 'state.json'; if(!(Test-Path -LiteralPath $p -PathType Leaf)){throw 'The durable Windows 10 language orchestrator is missing.'}; if(!(Test-Path -LiteralPath $s -PathType Leaf)){throw 'The durable Windows 10 language state is missing.'}; $state=Get-Content -LiteralPath $s -Raw | ConvertFrom-Json; if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne [string]$state.OrchestratorSha256){throw 'The durable Windows 10 language orchestrator failed state-pinned integrity validation.'}; & $p -Resume -AibPhase Validate -ExpectedLanguageTag 'fr-FR' -WorkingDirectory $w; if($LASTEXITCODE){exit $LASTEXITCODE}"
+      ],
+      "validExitCodes": [
+        0
+      ]
     }
   ]
 }

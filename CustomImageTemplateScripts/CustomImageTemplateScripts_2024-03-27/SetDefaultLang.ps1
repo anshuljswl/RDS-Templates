@@ -58,11 +58,11 @@ if ($osBuildForDispatch -in @(19044, 19045)) {
         "Ukrainian (Ukraine)" = "uk-UA"
     }
 
-    $windows10SupportBaseUri = 'https://raw.githubusercontent.com/anshuljswl/RDS-Templates/349bcea1685f9cc799a54a7f5e445955d38c4b76/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27'
+    $windows10SupportBaseUri = 'https://raw.githubusercontent.com/anshuljswl/RDS-Templates/385d5a6d38a6f34ebf744abfaca45f5b964569a7/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27'
     $windows10WorkingDirectory = 'C:\ProgramData\Windows10MachineLanguage'
     $windows10OrchestratorPath = Join-Path $windows10WorkingDirectory 'Set-Windows10MachineLanguage.ps1'
     $windows10CopyHelperPath = Join-Path $windows10WorkingDirectory 'Copy-UserInternationalSettingsToSystemCompat.ps1'
-    $windows10OrchestratorSha256 = 'B951F3BA5D53A2EF10C0A02ADF063AED86499AEEDD6EC3B54A20A1C9C598E808'
+    $windows10OrchestratorSha256 = '8E6D0A10A66950908700442345FABD82D04B83A66D3A0D453845750EA2C38D89'
     $windows10CopyHelperSha256 = '627BA579956AF437B2A865A99F4CCFBD8DEF7B6DCEBB2A14AA9CDA88ECBEC250'
     if (-not (Test-Path -LiteralPath $windows10OrchestratorPath -PathType Leaf)) {
         throw "Windows 10 language servicing state was not staged by InstallLanguagePacks.ps1."
