@@ -58,11 +58,11 @@ if ($osBuildForDispatch -in @(19044, 19045)) {
         "Ukrainian (Ukraine)" = "uk-UA"
     }
 
-    $windows10SupportBaseUri = 'https://raw.githubusercontent.com/anshuljswl/RDS-Templates/ec40a03252cab107fa186fb3994b5f77a8f470a8/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27'
+    $windows10SupportBaseUri = 'https://raw.githubusercontent.com/anshuljswl/RDS-Templates/dcaa3564c8975df11a09e152e3b852cc9277a6cb/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27'
     $windows10WorkingDirectory = 'C:\ProgramData\Windows10MachineLanguage'
     $windows10OrchestratorPath = Join-Path $windows10WorkingDirectory 'Set-Windows10MachineLanguage.ps1'
     $windows10CopyHelperPath = Join-Path $windows10WorkingDirectory 'Copy-UserInternationalSettingsToSystemCompat.ps1'
-    $windows10OrchestratorSha256 = '3E30467BEDD23E8A81AEAD21D2C97C0AC50E5243813FAB463DCBFDA9B74C7D47'
+    $windows10OrchestratorSha256 = '265C26DD99A02FC156F16601F2E071F7978C6E2968063CDEB991C566E2B371DE'
     $windows10CopyHelperSha256 = '627BA579956AF437B2A865A99F4CCFBD8DEF7B6DCEBB2A14AA9CDA88ECBEC250'
     if (-not (Test-Path -LiteralPath $windows10OrchestratorPath -PathType Leaf)) {
         throw "Windows 10 language servicing state was not staged by InstallLanguagePacks.ps1."
@@ -154,11 +154,7 @@ function UpdateRegionSettings($GeoID)
     }
 
     #Set Region in Default User Profile (applies to all new users)
-    $defaultUserGeoPath = 'Registry::HKEY_USERS\.DEFAULT\Control Panel\International\Geo'
-    if (-not (Test-Path -LiteralPath $defaultUserGeoPath)) {
-      [void](New-Item -Path $defaultUserGeoPath -Force -ErrorAction Stop)
-    }
-    [void](New-ItemProperty -Path $defaultUserGeoPath -Name "Nation" -Value ([string]$GeoID) -PropertyType String -Force -ErrorAction Stop)
+    New-ItemProperty -Path "Registry::HKEY_USERS\.DEFAULT\Control Panel\International\Geo" -Name "Nation" -Value $GeoID -PropertyType String -Force
     Set-WinHomeLocation -GeoId $GeoID
     Write-Host "***Starting AVD AIB CUSTOMIZER PHASE: Set default Language - Region update completed."
   }

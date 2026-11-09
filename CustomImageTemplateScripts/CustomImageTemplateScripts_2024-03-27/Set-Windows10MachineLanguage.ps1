@@ -66,7 +66,7 @@ param(
     [Parameter(ParameterSetName = 'Package', DontShow = $true)]
     [Parameter(ParameterSetName = 'OnlineMultiLanguage', DontShow = $true)]
     [Parameter(ParameterSetName = 'Resume', DontShow = $true)]
-    [ValidateSet('InstallLanguage', 'InstallLcu', 'ApplyMachineLanguage', 'Validate')]
+    [ValidateSet('InstallAndService', 'ApplyMachineLanguage', 'Validate')]
     [string]$AibPhase,
 
     [Parameter(ParameterSetName = 'Resume', DontShow = $true)]
@@ -127,137 +127,15 @@ function Read-State {
         throw "State file was not found at '$statePath'."
     }
 
-    try {
-        $state = Get-Content -LiteralPath $statePath -Raw -ErrorAction Stop |
-            ConvertFrom-Json -ErrorAction Stop
-    }
-    catch {
-        throw "State file '$statePath' is corrupt or unreadable: $($_.Exception.Message)"
-    }
-    if ($null -eq $state) {
-        throw "State file '$statePath' did not contain a state object."
-    }
-
-    return $state
+    return Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
 }
 
 function Write-State {
     param([Parameter(Mandatory = $true)]$State)
 
     $State.UpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
-    $temporaryStatePath = "$statePath.partial"
-    try {
-        $State | ConvertTo-Json -Depth 6 |
-            Set-Content -LiteralPath $temporaryStatePath -Encoding UTF8
-        [void](Get-Content -LiteralPath $temporaryStatePath -Raw -ErrorAction Stop |
-            ConvertFrom-Json -ErrorAction Stop)
-        Move-Item -LiteralPath $temporaryStatePath -Destination $statePath -Force
-    }
-    finally {
-        Remove-Item -LiteralPath $temporaryStatePath -Force -ErrorAction SilentlyContinue
-    }
-}
-
-function Get-FileSha256 {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "Required durable file was not found at '$Path'."
-    }
-
-    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash
-}
-
-function Assert-StateContract {
-    param([Parameter(Mandatory = $true)]$State)
-
-    $requiredProperties = @(
-        'StateSchemaVersion',
-        'OperationId',
-        'Phase',
-        'LanguageTags',
-        'LcuMode',
-        'RequireRdp',
-        'WorkingDirectory',
-        'OrchestratorSha256',
-        'CopyHelperSha256',
-        'StartedUtc',
-        'PhaseStartedUtc',
-        'FailureCount'
-    )
-    foreach ($propertyName in $requiredProperties) {
-        if ($State.PSObject.Properties.Name -notcontains $propertyName) {
-            throw "State contract is missing required property '$propertyName'."
-        }
-    }
-    if ([int]$State.StateSchemaVersion -ne 2) {
-        throw "Unsupported state schema version '$($State.StateSchemaVersion)'."
-    }
-    $operationId = [guid]::Empty
-    if (-not [guid]::TryParse([string]$State.OperationId, [ref]$operationId)) {
-        throw "State contract has invalid OperationId '$($State.OperationId)'."
-    }
-    $validPhases = @(
-        'InstallingLanguage',
-        'PostLanguageContentRestart',
-        'PostLcuRestart',
-        'PostLanguageRestart',
-        'Completed'
-    )
-    if ([string]$State.Phase -notin $validPhases) {
-        throw "State contract has unsupported phase '$($State.Phase)'."
-    }
-    if (@($State.LanguageTags).Count -eq 0) {
-        throw 'State contract does not contain any requested language tags.'
-    }
-    foreach ($languageTag in @($State.LanguageTags)) {
-        if ([string]::IsNullOrWhiteSpace([string]$languageTag)) {
-            throw 'State contract contains an empty language tag.'
-        }
-    }
-    if ([string]$State.LcuMode -notin @('Package', 'WindowsUpdate', 'OnlineMultiLanguage')) {
-        throw "State contract has unsupported LCU mode '$($State.LcuMode)'."
-    }
-    if (
-        -not [IO.Path]::GetFullPath([string]$State.WorkingDirectory).Equals(
-            [IO.Path]::GetFullPath($WorkingDirectory),
-            [StringComparison]::OrdinalIgnoreCase
-        )
-    ) {
-        throw (
-            "State contract working directory '$($State.WorkingDirectory)' does not match " +
-            "the requested directory '$WorkingDirectory'."
-        )
-    }
-    $startedUtc = [datetime]::MinValue
-    $phaseStartedUtc = [datetime]::MinValue
-    if (-not [datetime]::TryParse([string]$State.StartedUtc, [ref]$startedUtc)) {
-        throw "State contract has invalid timestamp 'StartedUtc'."
-    }
-    if (-not [datetime]::TryParse([string]$State.PhaseStartedUtc, [ref]$phaseStartedUtc)) {
-        throw "State contract has invalid timestamp 'PhaseStartedUtc'."
-    }
-    if ($phaseStartedUtc -lt $startedUtc -or $startedUtc -gt (Get-Date).AddMinutes(5)) {
-        throw 'State contract timestamps are inconsistent.'
-    }
-    if ([int]$State.FailureCount -lt 0) {
-        throw 'State contract has an invalid failure count.'
-    }
-    $actualOrchestratorSha256 = Get-FileSha256 -Path $installedScriptPath
-    if ($actualOrchestratorSha256 -ne [string]$State.OrchestratorSha256) {
-        throw 'The durable Windows 10 language orchestrator no longer matches the state contract.'
-    }
-    $actualCopyHelperSha256 = Get-FileSha256 -Path $installedHelperPath
-    if ($actualCopyHelperSha256 -ne [string]$State.CopyHelperSha256) {
-        throw 'The durable Windows 10 international-settings helper no longer matches the state contract.'
-    }
-    if (
-        [string]$State.LcuMode -eq 'Package' -and
-        [string]$State.Phase -in @('PostLanguageContentRestart', 'InstallingLanguage') -and
-        -not (Test-Path -LiteralPath ([string]$State.LcuPackagePath) -PathType Leaf)
-    ) {
-        throw "The durable LCU package recorded in state is missing at '$($State.LcuPackagePath)'."
-    }
+    $State | ConvertTo-Json -Depth 6 |
+        Set-Content -LiteralPath $statePath -Encoding UTF8
 }
 
 function Register-ResumeTask {
@@ -527,32 +405,6 @@ function Get-WindowsUpdateInstallFailureDisposition {
     }
 
     return 'TransientBusy'
-}
-
-function Get-LcuStartBlockReason {
-    param([string[]]$PendingReasons)
-
-    if (@($PendingReasons).Count -eq 0) {
-        return $null
-    }
-
-    return (
-        'Windows requires a servicing restart before LCU installation. ' +
-        "Pending signal(s): $(@($PendingReasons) -join ', '). " +
-        'The fixed exactly-three-managed-restart AIB workflow cannot safely start servicing pass 2 in this state: ' +
-        'the Windows Update installer can terminate its hosting task before returning an install result. ' +
-        'The first managed restart must clear every pre-LCU pending-restart signal; use a source image where ' +
-        'language/FoD servicing settles at that boundary or investigate the unresolved servicing state. ' +
-        'Do not add an internal or fourth restart.'
-    )
-}
-
-function Assert-LcuInstallationCanStart {
-    $pendingReasons = @(Get-ServicingPendingReasons)
-    $blockReason = Get-LcuStartBlockReason -PendingReasons $pendingReasons
-    if ($null -ne $blockReason) {
-        throw $blockReason
-    }
 }
 
 function Get-OsServicingInfo {
@@ -1605,51 +1457,33 @@ function Install-LcuFromPackage {
     }
 }
 
-function Get-WindowsUpdateServicingSelection {
-    param([ValidateRange(1, 500)][int]$MaximumUpdates = 100)
-
+function Get-WindowsUpdateLcuSelection {
     $session = New-Object -ComObject Microsoft.Update.Session
     $searcher = $session.CreateUpdateSearcher()
-    $result = $searcher.Search("BrowseOnly=0 and IsInstalled=0 and Type='Software' and IsHidden=0")
+    $result = $searcher.Search("IsInstalled=0 and Type='Software' and IsHidden=0")
     $candidates = @()
 
     for ($index = 0; $index -lt $result.Updates.Count; $index++) {
         $update = $result.Updates.Item($index)
-        $kbArticleIds = @($update.KBArticleIDs | ForEach-Object { [string]$_ })
-        if ($kbArticleIds -contains '5011048') {
-            Write-Operation "Excluded optional .NET Framework 4.8.1 feature upgrade '$($update.Title)' (KB5011048)."
-            continue
+        if (
+            $update.Title -match 'Cumulative Update for Windows 10' -and
+            $update.Title -notmatch '\.NET|Preview'
+        ) {
+            $candidates += $update
         }
-        $candidates += $update
     }
 
-    if ($candidates.Count -gt $MaximumUpdates) {
-        throw (
-            "Windows Update returned $($candidates.Count) applicable recommended updates, exceeding the bounded " +
-            "single-pass limit of $MaximumUpdates. Refusing to truncate the servicing set or loop indefinitely."
-        )
-    }
+    $selected = $candidates |
+        Sort-Object LastDeploymentChangeTime -Descending |
+        Select-Object -First 1
 
     return [pscustomobject]@{
         Session = $session
-        Updates = @($candidates)
+        Update  = $selected
     }
 }
 
-function Get-WindowsUpdateDescription {
-    param([Parameter(Mandatory = $true)]$Update)
-
-    $kbArticleIds = @($Update.KBArticleIDs | ForEach-Object { "KB$([string]$_)" })
-    $kbSummary = if ($kbArticleIds.Count -gt 0) {
-        $kbArticleIds -join ', '
-    }
-    else {
-        'no KB article ID'
-    }
-    return "'$($Update.Title)' ($kbSummary)"
-}
-
-function Install-RecommendedUpdatesFromWindowsUpdate {
+function Install-LcuFromWindowsUpdate {
     param(
         [Parameter(Mandatory = $true)]$Selection,
         [ValidateRange(1, 10)][int]$MaximumInstallAttempts = 3,
@@ -1658,48 +1492,26 @@ function Install-RecommendedUpdatesFromWindowsUpdate {
     )
 
     $session = $Selection.Session
-    $selectedUpdates = @($Selection.Updates)
-    if ($selectedUpdates.Count -eq 0) {
-        Write-Operation 'Windows Update found no applicable recommended non-optional software updates.'
-        return
+    $selected = $Selection.Update
+    if ($null -eq $selected) {
+        throw ('Windows Update did not offer an applicable Windows 10 LCU. ' +
+            'Microsoft notes that an already-installed LCU is not offered again; rerun with -LcuPackagePath pointing to the approved Catalog/WSUS package.')
     }
 
+    if (-not $selected.EulaAccepted) {
+        $selected.AcceptEula()
+    }
+
+    Write-Operation "Selected Windows Update package '$($selected.Title)'."
     $updates = New-Object -ComObject Microsoft.Update.UpdateColl
-    $downloadUpdates = New-Object -ComObject Microsoft.Update.UpdateColl
-    $downloadCandidates = New-Object System.Collections.Generic.List[object]
-    foreach ($selected in $selectedUpdates) {
-        if (-not $selected.EulaAccepted) {
-            $selected.AcceptEula()
-        }
-        Write-Operation "Selected Windows Update package $(Get-WindowsUpdateDescription -Update $selected)."
-        [void]$updates.Add($selected)
-        if (-not $selected.IsDownloaded) {
-            [void]$downloadUpdates.Add($selected)
-            $downloadCandidates.Add($selected)
-        }
-    }
+    [void]$updates.Add($selected)
 
-    if ($downloadCandidates.Count -gt 0) {
+    if (-not $selected.IsDownloaded) {
         $downloader = $session.CreateUpdateDownloader()
-        $downloader.Updates = $downloadUpdates
+        $downloader.Updates = $updates
         $downloadResult = $downloader.Download()
-        $downloadFailures = @()
-        for ($index = 0; $index -lt $downloadCandidates.Count; $index++) {
-            $updateResult = $downloadResult.GetUpdateResult($index)
-            if ($updateResult.ResultCode -ne 2 -or $updateResult.HResult -ne 0) {
-                $hresult = '0x{0:X8}' -f ($updateResult.HResult -band 0xffffffffL)
-                $downloadFailures += (
-                    "$(Get-WindowsUpdateDescription -Update $downloadCandidates[$index]): " +
-                    "ResultCode=$($updateResult.ResultCode), HResult=$hresult"
-                )
-            }
-        }
-        if ($downloadResult.ResultCode -ne 2 -or $downloadFailures.Count -gt 0) {
-            throw (
-                "Windows Update download did not succeed for every selected update. " +
-                "AggregateResultCode=$($downloadResult.ResultCode). " +
-                "Failure(s): $($downloadFailures -join '; ')"
-            )
+        if ($downloadResult.ResultCode -ne 2) {
+            throw "LCU download failed with result code $($downloadResult.ResultCode)."
         }
     }
 
@@ -1707,26 +1519,8 @@ function Install-RecommendedUpdatesFromWindowsUpdate {
         $installer = $session.CreateUpdateInstaller()
         $installer.Updates = $updates
         $installResult = $installer.Install()
-        $installFailures = @()
-        for ($index = 0; $index -lt $selectedUpdates.Count; $index++) {
-            $updateResult = $installResult.GetUpdateResult($index)
-            if ($updateResult.ResultCode -ne 2 -or $updateResult.HResult -ne 0) {
-                $updateHresult = '0x{0:X8}' -f ($updateResult.HResult -band 0xffffffffL)
-                $installFailures += (
-                    "$(Get-WindowsUpdateDescription -Update $selectedUpdates[$index]): " +
-                    "ResultCode=$($updateResult.ResultCode), HResult=$updateHresult"
-                )
-            }
-        }
-        if (
-            $installResult.ResultCode -eq 2 -and
-            $installResult.HResult -eq 0 -and
-            $installFailures.Count -eq 0
-        ) {
-            Write-Operation (
-                "Windows Update installed all $($selectedUpdates.Count) selected update(s) successfully. " +
-                "RebootRequired=$($installResult.RebootRequired)."
-            )
+        if ($installResult.ResultCode -eq 2 -and $installResult.HResult -eq 0) {
+            Write-Operation "LCU installation completed successfully. RebootRequired=$($installResult.RebootRequired)."
             return
         }
 
@@ -1737,21 +1531,17 @@ function Install-RecommendedUpdatesFromWindowsUpdate {
             -PendingReasons $pendingReasons
         if ($disposition -eq 'PendingRestart') {
             throw (
-                "Windows Update servicing cannot continue because installation returned $hresult and " +
+                "LCU installation cannot continue because Windows Update returned $hresult and " +
                 "a servicing restart is pending. Pending signal(s): $($pendingReasons -join ', '). " +
                 'Complete the required restart before retrying; the workflow will not suppress this state.'
             )
         }
         if ($disposition -ne 'TransientBusy') {
-            throw (
-                "Windows Update installation did not succeed for every selected update. " +
-                "AggregateResultCode=$($installResult.ResultCode), AggregateHResult=$hresult. " +
-                "Failure(s): $($installFailures -join '; ')"
-            )
+            throw "LCU installation failed. ResultCode=$($installResult.ResultCode), HResult=$hresult."
         }
         if ($attempt -eq $MaximumInstallAttempts) {
             throw (
-                "Windows Update servicing remained blocked by transient activity ($hresult) " +
+                "LCU installation remained blocked by transient Windows Update activity ($hresult) " +
                 "after $MaximumInstallAttempts attempts. No reboot-pending signal was detected. " +
                 'Inspect Windows Update, CBS, and UsoClient logs for the competing installation.'
             )
@@ -1765,7 +1555,7 @@ function Install-RecommendedUpdatesFromWindowsUpdate {
             'none observed'
         }
         Write-Operation (
-            "Windows Update returned transient busy status $hresult on servicing attempt " +
+            "Windows Update returned transient busy status $hresult on LCU install attempt " +
             "$attempt of $MaximumInstallAttempts with no reboot-pending signal. " +
             "Active installer process(es): $installerSummary. Waiting before retry."
         )
@@ -1774,35 +1564,6 @@ function Install-RecommendedUpdatesFromWindowsUpdate {
             -TimeoutMinutes $BusyReadinessTimeoutMinutes `
             -AllowPendingRestart
     }
-}
-
-function Invoke-WindowsUpdateServicingPass {
-    param([Parameter(Mandatory = $true)][string]$PassName)
-
-    Write-Operation "Starting bounded Windows Update servicing pass '$PassName'."
-    $selection = Get-WindowsUpdateServicingSelection
-    Install-RecommendedUpdatesFromWindowsUpdate -Selection $selection
-    Write-Operation "Completed bounded Windows Update servicing pass '$PassName' without an internal restart."
-}
-
-function Assert-WindowsUpdateServicingConverged {
-    $selection = Get-WindowsUpdateServicingSelection
-    $remainingUpdates = @($selection.Updates)
-    if ($remainingUpdates.Count -eq 0) {
-        Write-Operation 'Windows Update servicing convergence confirmed after the third managed restart.'
-        return
-    }
-
-    $remainingSummary = @(
-        $remainingUpdates | ForEach-Object {
-            Get-WindowsUpdateDescription -Update $_
-        }
-    ) -join '; '
-    throw (
-        "Windows Update servicing did not converge after the three bounded installation passes and managed restarts. " +
-        "$($remainingUpdates.Count) applicable recommended non-optional update(s) remain after the third managed restart: " +
-        "$remainingSummary. The workflow will not hide the remaining security servicing or add an internal/fourth restart."
-    )
 }
 
 function Request-Restart {
@@ -1823,9 +1584,6 @@ function Request-Restart {
         ResumeTask  = if ($isAibExecution) { $null } else { $taskName }
         NextAibPhase = if (-not $isAibExecution) {
             $null
-        }
-        elseif ([string]$state.Phase -eq 'PostLanguageContentRestart') {
-            'InstallLcu'
         }
         elseif ([string]$state.Phase -eq 'PostLcuRestart') {
             'ApplyMachineLanguage'
@@ -1932,7 +1690,7 @@ function Assert-PortalRestartCompleted {
     }
 }
 
-function Invoke-InstallLanguagePhase {
+function Invoke-InstallAndServicePhase {
     param([Parameter(Mandatory = $true)]$State)
 
     $targetLanguageTags = @(Get-StateLanguageTags -State $State)
@@ -1969,35 +1727,6 @@ function Invoke-InstallLanguagePhase {
     }
 
     Wait-ForServicingReady -AllowPendingRestart
-    foreach ($targetLanguageTag in $targetLanguageTags) {
-        [void](Wait-ForLanguagePackage -TargetLanguageTag $targetLanguageTag)
-        Write-Operation "Verified the '$targetLanguageTag' CBS client language package is installed before restart."
-    }
-    if ([string]$State.LcuMode -ne 'Package') {
-        Invoke-WindowsUpdateServicingPass -PassName 'AfterLanguageContentBeforeRestart1'
-    }
-
-    $State.Phase = 'PostLanguageContentRestart'
-    $State.PhaseStartedUtc = (Get-Date).ToUniversalTime().ToString('o')
-    $State.Error = $null
-    Write-State -State $State
-    Register-ResumeTask
-    Request-Restart -Reason 'Restarting after language and Features on Demand servicing before LCU evaluation.'
-}
-
-function Invoke-InstallLcuPhase {
-    param([Parameter(Mandatory = $true)]$State)
-
-    Assert-PortalRestartCompleted -State $State
-    Start-Sleep -Seconds 60
-    Wait-ForServicingReady
-
-    $targetLanguageTags = @(Get-StateLanguageTags -State $State)
-    foreach ($targetLanguageTag in $targetLanguageTags) {
-        [void](Wait-ForLanguagePackage -TargetLanguageTag $targetLanguageTag)
-        Write-Operation "Verified the '$targetLanguageTag' CBS client language package after the pre-LCU restart."
-    }
-
     $requiresLcuReapplication = $false
     try {
         foreach ($targetLanguageTag in $targetLanguageTags) {
@@ -2010,30 +1739,18 @@ function Invoke-InstallLcuPhase {
         $requiresLcuReapplication = $true
     }
 
-    Assert-LcuInstallationCanStart
-    if ([string]$State.LcuMode -eq 'Package') {
-        if ($requiresLcuReapplication) {
+    if ($requiresLcuReapplication) {
+        if ([string]$State.LcuMode -eq 'Package') {
             Install-LcuFromPackage -PackagePath $State.LcuPackagePath
         }
         else {
-            Write-Operation 'LCU package reapplication was not required after the pre-LCU restart.'
-        }
-    }
-    else {
-        $windowsUpdateSelection = Get-WindowsUpdateServicingSelection
-        if ($requiresLcuReapplication) {
-            $selectedWindows10Lcu = @(
-                $windowsUpdateSelection.Updates | Where-Object {
-                    $_.Title -match 'Cumulative Update for Windows 10' -and
-                    $_.Title -notmatch '\.NET'
-                }
-            )
-            if ($selectedWindows10Lcu.Count -eq 0) {
+            $windowsUpdateSelection = Get-WindowsUpdateLcuSelection
+            if ($null -eq $windowsUpdateSelection.Update) {
                 throw ('Windows Update does not currently offer an applicable Windows 10 LCU. ' +
                     'Supply the organization-approved current LCU with -LcuPackagePath.')
             }
+            Install-LcuFromWindowsUpdate -Selection $windowsUpdateSelection
         }
-        Install-RecommendedUpdatesFromWindowsUpdate -Selection $windowsUpdateSelection
     }
 
     $State.Phase = 'PostLcuRestart'
@@ -2070,19 +1787,8 @@ function Invoke-InitialPhase {
     }
     if ($isAibExecution -and (Test-Path -LiteralPath $statePath -PathType Leaf)) {
         $existingState = Read-State
-        Assert-StateContract -State $existingState
-        if ([string]$existingState.Phase -eq 'InstallingLanguage') {
-            Write-Operation 'Resuming the interrupted AIB language/FoD phase from durable state.'
-            $script:StateOwnedByCurrentInvocation = $true
-            Invoke-InstallLanguagePhase -State $existingState
-            return
-        }
-        if ([string]$existingState.Phase -eq 'PostLanguageContentRestart') {
-            Write-Operation 'The AIB language/FoD phase is already complete and awaiting its managed restart.'
-            return
-        }
         if ([string]$existingState.Phase -ne 'Completed') {
-            throw "An incomplete AIB language operation already exists in phase '$($existingState.Phase)' and cannot be restarted by the initial customizer."
+            throw "An incomplete AIB language operation already exists in phase '$($existingState.Phase)'. Resume it instead of starting over."
         }
     }
     Wait-ForServicingReady
@@ -2152,9 +1858,7 @@ function Invoke-InitialPhase {
     }
 
     $state = [pscustomobject][ordered]@{
-        StateSchemaVersion   = 2
-        OperationId          = [guid]::NewGuid().ToString('D')
-        Phase                = 'InstallingLanguage'
+        Phase                = 'InstallingLanguageAndLcu'
         LanguageTag          = if ($initialParameterSetName -eq 'OnlineMultiLanguage') { $null } else { $LanguageTag }
         LanguageTags         = $requestedLanguageTags
         LcuMode              = $initialParameterSetName
@@ -2166,9 +1870,6 @@ function Invoke-InitialPhase {
         RequireRdp           = [bool]$RequireRdp
         AllowRecognizedNonServicingPendingFileRenames = [bool]$script:AllowRecognizedNonServicingPendingFileRenames
         RestartAutomatically = [bool]$RestartAutomatically
-        WorkingDirectory     = [IO.Path]::GetFullPath($WorkingDirectory)
-        OrchestratorSha256   = Get-FileSha256 -Path $installedScriptPath
-        CopyHelperSha256     = Get-FileSha256 -Path $installedHelperPath
         FailureCount         = 0
         Error                = $null
         DefaultUserHiveBackup = $null
@@ -2179,7 +1880,7 @@ function Invoke-InitialPhase {
     Write-State -State $state
     Register-ResumeTask
     $script:StateOwnedByCurrentInvocation = $true
-    Invoke-InstallLanguagePhase -State $state
+    Invoke-InstallAndServicePhase -State $state
 }
 
 function Invoke-PostLcuRestartPhase {
@@ -2191,10 +1892,6 @@ function Invoke-PostLcuRestartPhase {
     $targetLanguageTags = @(Get-StateLanguageTags -State $State)
     foreach ($targetLanguageTag in $targetLanguageTags) {
         Assert-LanguageServicedToCurrentUbr -TargetLanguageTag $targetLanguageTag
-    }
-    if ([string]$State.LcuMode -ne 'Package') {
-        Assert-LcuInstallationCanStart
-        Invoke-WindowsUpdateServicingPass -PassName 'AfterRestart2BeforeMachineLanguage'
     }
     Assert-CoreHealth -CheckRdp:$State.RequireRdp -EventsSince ([datetime]$State.PhaseStartedUtc)
 
@@ -2250,9 +1947,6 @@ function Invoke-PostLanguageRestartPhase {
     }
 
     Assert-DefaultUserLanguage -TargetLanguageTag $State.LanguageTag
-    if ([string]$State.LcuMode -ne 'Package') {
-        Assert-WindowsUpdateServicingConverged
-    }
     Assert-CoreHealth -CheckRdp:$State.RequireRdp -EventsSince ([datetime]$State.PhaseStartedUtc)
     Complete-Operation -State $State
 }
@@ -2264,10 +1958,10 @@ if (-not (Test-IsElevated)) {
 if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
     throw 'Run this script from 64-bit Windows PowerShell on 64-bit Windows.'
 }
-if ($isAibExecution -and $AibPhase -ne 'Validate' -and -not (Test-IsSystemAccount)) {
+if ($isAibExecution -and -not (Test-IsSystemAccount)) {
     throw 'Azure Image Builder mode must run as the local SYSTEM account.'
 }
-if ($isAibExecution -and $AibPhase -ne 'InstallLanguage' -and -not $Resume) {
+if ($isAibExecution -and $AibPhase -ne 'InstallAndService' -and -not $Resume) {
     throw "AIB phase '$AibPhase' requires -Resume."
 }
 
@@ -2281,7 +1975,6 @@ try {
     }
 
     $state = Read-State
-    Assert-StateContract -State $state
     $script:StateOwnedByCurrentInvocation = $true
     $script:RestartAutomatically = if ($isAibExecution) { $false } else { [bool]$state.RestartAutomatically }
     $script:AllowRecognizedNonServicingPendingFileRenames = (
@@ -2304,8 +1997,8 @@ try {
         throw "Requested language '$ExpectedLanguageTag' was not recorded by InstallLanguagePacks.ps1."
     }
     if ($isAibExecution) {
-        $expectedPhase = if ($AibPhase -eq 'InstallLcu') {
-            'PostLanguageContentRestart'
+        $expectedPhase = if ($AibPhase -eq 'InstallAndService') {
+            'InstallingLanguageAndLcu'
         }
         elseif ($AibPhase -eq 'ApplyMachineLanguage') {
             'PostLcuRestart'
@@ -2316,29 +2009,13 @@ try {
         else {
             throw "Unsupported AIB resume phase '$AibPhase'."
         }
-        $completedPhase = if ($AibPhase -eq 'InstallLcu') {
-            'PostLcuRestart'
-        }
-        elseif ($AibPhase -eq 'ApplyMachineLanguage') {
-            'PostLanguageRestart'
-        }
-        else {
-            'Completed'
-        }
-        if ([string]$state.Phase -eq $completedPhase) {
-            Write-Operation "AIB phase '$AibPhase' is already complete in durable state '$completedPhase'."
-            return
-        }
         if ([string]$state.Phase -ne $expectedPhase) {
             throw "AIB phase '$AibPhase' requires state '$expectedPhase', found '$($state.Phase)'."
         }
     }
     switch ([string]$state.Phase) {
-        'InstallingLanguage' {
-            Invoke-InstallLanguagePhase -State $state
-        }
-        'PostLanguageContentRestart' {
-            Invoke-InstallLcuPhase -State $state
+        'InstallingLanguageAndLcu' {
+            Invoke-InstallAndServicePhase -State $state
         }
         'PostLcuRestart' {
             Invoke-PostLcuRestartPhase -State $state
