@@ -19,11 +19,14 @@
 $osBuildForDispatch = [System.Environment]::OSVersion.Version.Build
 if ($osBuildForDispatch -in @(19044, 19045)) {
     $windows10SupportBaseUri = 'https://raw.githubusercontent.com/anshuljswl/RDS-Templates/dcaa3564c8975df11a09e152e3b852cc9277a6cb/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27'
+    $windows10SsuUri = 'https://raw.githubusercontent.com/Azure/RDS-Templates/0c0e10c9791c37f5314736b5b1d35d6eef83b289/CustomImageTemplateScripts/CustomImageTemplateScripts_2024-03-27/Install-Windows10MultisessionSSU.ps1'
     $windows10WorkingDirectory = 'C:\ProgramData\Windows10MachineLanguage'
     $windows10OrchestratorPath = Join-Path $windows10WorkingDirectory 'Set-Windows10MachineLanguage.ps1'
     $windows10CopyHelperPath = Join-Path $windows10WorkingDirectory 'Copy-UserInternationalSettingsToSystemCompat.ps1'
+    $windows10SsuPath = Join-Path $windows10WorkingDirectory 'Install-Windows10MultisessionSSU.ps1'
     $windows10OrchestratorSha256 = '265C26DD99A02FC156F16601F2E071F7978C6E2968063CDEB991C566E2B371DE'
     $windows10CopyHelperSha256 = '627BA579956AF437B2A865A99F4CCFBD8DEF7B6DCEBB2A14AA9CDA88ECBEC250'
+    $windows10SsuSha256 = '31C24D0747DD227DDA3886D383AB799F05A8A5B94C2F899FF9E7879A4EB5404A'
 
     function Save-VerifiedWindows10SupportFile {
         param(
@@ -123,6 +126,10 @@ if ($osBuildForDispatch -in @(19044, 19045)) {
         -Uri "$windows10SupportBaseUri/Copy-UserInternationalSettingsToSystemCompat.ps1" `
         -Destination $windows10CopyHelperPath `
         -ExpectedSha256 $windows10CopyHelperSha256
+    Save-VerifiedWindows10SupportFile `
+        -Uri $windows10SsuUri `
+        -Destination $windows10SsuPath `
+        -ExpectedSha256 $windows10SsuSha256
 
     & $windows10OrchestratorPath `
         -LanguageTags $languageTags.ToArray() `
@@ -130,6 +137,7 @@ if ($osBuildForDispatch -in @(19044, 19045)) {
         -CopyNewUserSettingsScriptPath $windows10CopyHelperPath `
         -AibPhase InstallAndService `
         -AllowRecognizedNonServicingPendingFileRenames
+    & $windows10SsuPath
     return
 }
 

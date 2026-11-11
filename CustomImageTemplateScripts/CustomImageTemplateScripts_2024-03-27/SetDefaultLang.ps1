@@ -62,13 +62,18 @@ if ($osBuildForDispatch -in @(19044, 19045)) {
     $windows10WorkingDirectory = 'C:\ProgramData\Windows10MachineLanguage'
     $windows10OrchestratorPath = Join-Path $windows10WorkingDirectory 'Set-Windows10MachineLanguage.ps1'
     $windows10CopyHelperPath = Join-Path $windows10WorkingDirectory 'Copy-UserInternationalSettingsToSystemCompat.ps1'
+    $windows10SsuPath = Join-Path $windows10WorkingDirectory 'Install-Windows10MultisessionSSU.ps1'
     $windows10OrchestratorSha256 = '265C26DD99A02FC156F16601F2E071F7978C6E2968063CDEB991C566E2B371DE'
     $windows10CopyHelperSha256 = '627BA579956AF437B2A865A99F4CCFBD8DEF7B6DCEBB2A14AA9CDA88ECBEC250'
+    $windows10SsuSha256 = '31C24D0747DD227DDA3886D383AB799F05A8A5B94C2F899FF9E7879A4EB5404A'
     if (-not (Test-Path -LiteralPath $windows10OrchestratorPath -PathType Leaf)) {
         throw "Windows 10 language servicing state was not staged by InstallLanguagePacks.ps1."
     }
     if (-not (Test-Path -LiteralPath $windows10CopyHelperPath -PathType Leaf)) {
         throw "Windows 10 international-settings support was not staged by InstallLanguagePacks.ps1."
+    }
+    if (-not (Test-Path -LiteralPath $windows10SsuPath -PathType Leaf)) {
+        throw "Windows 10 multi-session SSU support was not staged by InstallLanguagePacks.ps1."
     }
     $actualOrchestratorSha256 = (Get-FileHash -LiteralPath $windows10OrchestratorPath -Algorithm SHA256).Hash
     if ($actualOrchestratorSha256 -ne $windows10OrchestratorSha256) {
@@ -77,6 +82,10 @@ if ($osBuildForDispatch -in @(19044, 19045)) {
     $actualCopyHelperSha256 = (Get-FileHash -LiteralPath $windows10CopyHelperPath -Algorithm SHA256).Hash
     if ($actualCopyHelperSha256 -ne $windows10CopyHelperSha256) {
         throw "The staged Windows 10 international-settings helper failed integrity validation against '$windows10SupportBaseUri'."
+    }
+    $actualSsuSha256 = (Get-FileHash -LiteralPath $windows10SsuPath -Algorithm SHA256).Hash
+    if ($actualSsuSha256 -ne $windows10SsuSha256) {
+        throw "The staged Windows 10 multi-session SSU script failed integrity validation."
     }
 
     $languageTag = [string]$windows10LanguageTags[$Language]
@@ -89,6 +98,7 @@ if ($osBuildForDispatch -in @(19044, 19045)) {
         -AibPhase ApplyMachineLanguage `
         -ExpectedLanguageTag $languageTag `
         -WorkingDirectory $windows10WorkingDirectory
+    & $windows10SsuPath
     return
 }
 
